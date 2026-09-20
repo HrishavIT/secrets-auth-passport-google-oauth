@@ -18,6 +18,7 @@ app.use(
     secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: true,
+    cookie: { maxAge: 1000 * 60 * 60 * 24 },
   })
 );
 
@@ -48,7 +49,7 @@ app.get("/register", (req, res) => {
   res.render("register.ejs");
 });
 
-app.get("/logout", (req, res) => {
+app.get("/logout", (req, res,next) => {
   req.logout(function (err) {
     if (err) {
       return next(err);
@@ -75,12 +76,6 @@ app.get("/auth/google/secrets",passport.authenticate("google", {
     failureRedirect: "/login",
 }));
 
-app.get("/logout",(req,res)=>{
-  req.logout((err)=>{
-    if(err) console.log(err);
-    res.redirect("/");
-  })
-})
 
 app.post(
   "/login",
@@ -95,31 +90,29 @@ app.post("/register", async (req, res) => {
   const password = req.body.password;
 
   try {
-    const checkResult = await db.query("SELECT * FROM users WHERE email = $1", [
-      email,
-    ]);
+    const checkResult = await db.query("SELECT * FROM users WHERE email = $1", [email]);
 
     if (checkResult.rows.length > 0) {
-      req.redirect("/login");
-    } else {
-      bcrypt.hash(password, saltRounds, async (err, hash) => {
-        if (err) {
-          console.error("Error hashing password:", err);
-        } else {
-          const result = await db.query(
-            "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING *",
-            [email, hash]
-          );
-          const user = result.rows[0];
-          req.login(user, (err) => {
-            console.log("success");
-            res.redirect("/secrets");
-          });
-        }
-      });
+      return res.redirect("/login");
     }
+
+    const hash = await bcrypt.hash(password, saltRounds);
+    const result = await db.query(
+      "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING *",
+      [email, hash]
+    );
+    const user = result.rows[0];
+
+    req.login(user, (err) => {
+      if (err) {
+        console.log(err);
+        return res.redirect("/login");
+      }
+      res.redirect("/secrets");
+    });
   } catch (err) {
     console.log(err);
+    res.status(500).send("Something went wrong.");
   }
 });
 
@@ -148,10 +141,11 @@ passport.use("local",
           }
         });
       } else {
-        return cb("User not found");
+        return cb(null,false);
       }
     } catch (err) {
       console.log(err);
+      return cb(err);
     }
   })
 );
@@ -160,27 +154,27 @@ passport.use("google",new GoogleStrategy({
   clientID: process.env.GOOGLE_CLIENT_ID,
   clientSecret: process.env.GOOGLE_CLIENT_SECRET,
   callbackURL: "http://localhost:3000/auth/google/secrets",
-  userProfileURL: "https://www.googleleapis.com/oauth2/v3/userinfo",
-}, async (accessToken,refreshToken,Profiler,cb)=> {
+  userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo",
+}, async (accessToken,refreshToken,profile,cb)=> {
   console.log(profile);
   try{
-    await db.query("SELECT * FROM users WHERE email =$1 ", [profile.email]);
+    const result=await db.query("SELECT * FROM users WHERE email =$1 ", [profile.email]);
     if(result.rows.length===0)
     {
-      const newUser= await db.query("INSERT INTO users (email,password) VALUES ($1,$2)",[profile.email,"google"])
+      const newUser= await db.query("INSERT INTO users (email,password) VALUES ($1,$2) RETURNING *",[profile.email,"google"])
       cb(null,newUser.rows[0]);
     }
     else {
       cb(null,result.rows[0]);
     }
-  } catch{
-
+  } catch(err){
+    return cb(err)
   }
 }));
 
-passport.serializeUser((user, cb) => {
-  cb(null, user);
-});
+ passport.serializeUser((user, cb) => {
+     cb(null, { id: user.id, email: user.email });
+   });
 passport.deserializeUser((user, cb) => {
   cb(null, user);
 });
